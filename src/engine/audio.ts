@@ -123,7 +123,7 @@ class ProceduralAudioEngine {
     this.applyVolumes();
   }
 
-  public updateEngine(speedRatio: number, isDrifting: boolean): void {
+  public updateEngine(speedRatio: number, isDrifting: boolean, brakingIntensity = 0): void {
     if (!this.initialized || !this.ctx || !this.engineOscA || !this.engineOscB || !this.engineFilter) {
       return;
     }
@@ -138,8 +138,12 @@ class ProceduralAudioEngine {
     this.engineFilter.frequency.setTargetAtTime(240 + clamped * 950, now, 0.05);
 
     if (this.driftNoiseGain) {
-      const targetScreech = this.engineActive && isDrifting && clamped > 0.25 ? 0.09 : 0;
-      this.driftNoiseGain.gain.setTargetAtTime(targetScreech, now, 0.04);
+      const driftScreech = this.engineActive && isDrifting && clamped > 0.25 ? 0.09 : 0;
+      const brakeScreech =
+        this.engineActive && brakingIntensity > 0.25 && clamped > 0.22
+          ? Math.min(0.085, brakingIntensity * clamped * 0.09)
+          : 0;
+      this.driftNoiseGain.gain.setTargetAtTime(Math.max(driftScreech, brakeScreech), now, 0.04);
     }
   }
 

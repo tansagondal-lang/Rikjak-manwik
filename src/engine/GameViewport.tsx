@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { CAR_MAP } from '../data/cars';
-import { getCompiledTrack } from '../data/tracks';
+import { findClosestTrackSample, getCompiledTrack } from '../data/tracks';
 import { multiplayerClient } from '../services/multiplayer';
 import {
   AllSettings,
@@ -293,6 +293,7 @@ export const GameViewport: React.FC<GameViewportProps> = ({
     const _smokeColorBrake = new THREE.Color(0x64748b);
     const _smokeColorDirtyBrake = new THREE.Color(0x453221);
     const _smokeColorEngine = new THREE.Color(0x334155);
+    const _smokeColorSpark = new THREE.Color(0xf97316);
 
     const dustPool = Array.from({ length: DUST_COUNT }, () => ({
       x: 0,
@@ -306,9 +307,70 @@ export const GameViewport: React.FC<GameViewportProps> = ({
     }));
     let dustCursor = 0;
 
+    // Pooled Asphalt Skid Marks (1 InstancedMesh draw call, zero per-frame allocations)
+    const SKID_COUNT = 220;
+    const skidGeo = new THREE.PlaneGeometry(0.38, 1.35);
+    skidGeo.rotateX(-Math.PI / 2);
+    const skidMat = new THREE.MeshBasicMaterial({
+      color: 0x09090b,
+      transparent: true,
+      opacity: 0.46,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    const skidMesh = new THREE.InstancedMesh(skidGeo, skidMat, SKID_COUNT);
+    skidMesh.frustumCulled = false;
+    for (let i = 0; i < SKID_COUNT; i++) {
+      _dustDummy.position.set(0, -50, 0);
+      _dustDummy.scale.setScalar(0.001);
+      _dustDummy.updateMatrix();
+      skidMesh.setMatrixAt(i, _dustDummy.matrix);
+    }
+    skidMesh.instanceMatrix.needsUpdate = true;
+    scene.add(skidMesh);
+    let skidCursor = 0;
+    let skidDirty = false;
+
+    const clearSkidMarks = () => {
+      for (let i = 0; i < SKID_COUNT; i++) {
+        _dustDummy.position.set(0, -50, 0);
+        _dustDummy.scale.setScalar(0.001);
+        _dustDummy.rotation.set(0, 0, 0);
+        _dustDummy.updateMatrix();
+        skidMesh.setMatrixAt(i, _dustDummy.matrix);
+      }
+      skidMesh.instanceMatrix.needsUpdate = true;
+      skidDirty = false;
+    };
+
+    const stampSkidMarks = (r: RacerBody, includeFront: boolean) => {
+      const fx = -Math.sin(r.yaw);
+      const fz = -Math.cos(r.yaw);
+      const rx = Math.cos(r.yaw);
+      const rz = -Math.sin(r.yaw);
+      const axles = includeFront ? [-1.3, 1.3] : [-1.3];
+
+      for (let a = 0; a < axles.length; a++) {
+        const ax = axles[a];
+        for (let side = -1; side <= 1; side += 2) {
+          const sx = r.x + fx * ax + rx * side * 0.98;
+          const sz = r.z + fz * ax + rz * side * 0.98;
+          _dustDummy.position.set(sx, r.y + 0.055, sz);
+          _dustDummy.rotation.set(r.slopePitch, r.yaw, 0);
+          _dustDummy.scale.set(1, 1, Math.max(0.8, Math.min(2.2, r.speed / 28)));
+          _dustDummy.updateMatrix();
+          skidMesh.setMatrixAt(skidCursor, _dustDummy.matrix);
+          skidCursor = (skidCursor + 1) % SKID_COUNT;
+          skidDirty = true;
+        }
+      }
+    };
+
     const spawnSmokePuff = (
       r: RacerBody,
-      kind: 'drift' | 'brake' | 'damage',
+      kind: 'drift' | 'brake' | 'damage' | 'spark',
     ) => {
       const fx = -Math.sin(r.yaw);
       const fz = -Math.cos(r.yaw);
@@ -319,13 +381,29 @@ export const GameViewport: React.FC<GameViewportProps> = ({
         const p = dustPool[dustCursor];
         dustCursor = (dustCursor + 1) % DUST_COUNT;
         p.x = r.x + fx * 1.15 + (Math.random() - 0.5) * 0.45;
-        p.y = 1.05 + Math.random() * 0.2;
+        p.y = r.y + 1.05 + Math.random() * 0.2;
         p.z = r.z + fz * 1.15 + (Math.random() - 0.5) * 0.45;
         p.vx = (Math.random() - 0.5) * 0.8;
         p.vz = (Math.random() - 0.5) * 0.8;
         p.maxLife = 0.72;
         p.life = p.maxLife;
         p.color = _smokeColorEngine;
+        return;
+      }
+
+      if (kind === 'spark') {
+        for (let side = -1; side <= 1; side += 2) {
+          const p = dustPool[dustCursor];
+          dustCursor = (dustCursor + 1) % DUST_COUNT;
+          p.x = r.x + fx * 1.25 + rx * side * 0.92;
+          p.y = r.y + 0.22;
+          p.z = r.z + fz * 1.25 + rz * side * 0.92;
+          p.vx = rx * side * 2.2 - fx * 3.5 + (Math.random() - 0.5) * 1.5;
+          p.vz = rz * side * 2.2 - fz * 3.5 + (Math.random() - 0.5) * 1.5;
+          p.maxLife = 0.24;
+          p.life = p.maxLife;
+          p.color = _smokeColorSpark;
+        }
         return;
       }
 
@@ -336,13 +414,14 @@ export const GameViewport: React.FC<GameViewportProps> = ({
             : _smokeColorBrake
           : _smokeColorDrift;
 
-      // Spawn behind both rear tires
+      // Spawn behind rear tires (and front tires under heavy braking)
+      const zOff = kind === 'brake' && Math.random() < 0.45 ? 1.2 : -1.45;
       for (let side = -1; side <= 1; side += 2) {
         const p = dustPool[dustCursor];
         dustCursor = (dustCursor + 1) % DUST_COUNT;
-        p.x = r.x - fx * 1.45 + rx * side * 0.85 + (Math.random() - 0.5) * 0.25;
-        p.y = 0.28 + Math.random() * 0.12;
-        p.z = r.z - fz * 1.45 + rz * side * 0.85 + (Math.random() - 0.5) * 0.25;
+        p.x = r.x + fx * zOff + rx * side * 0.88 + (Math.random() - 0.5) * 0.25;
+        p.y = r.y + 0.26 + Math.random() * 0.12;
+        p.z = r.z + fz * zOff + rz * side * 0.88 + (Math.random() - 0.5) * 0.25;
         p.vx = rx * side * 1.2 - fx * 1.4 + (Math.random() - 0.5) * 0.8;
         p.vz = rz * side * 1.2 - fz * 1.4 + (Math.random() - 0.5) * 0.8;
         p.maxLife = kind === 'brake' ? 0.5 : 0.62;
@@ -438,10 +517,12 @@ export const GameViewport: React.FC<GameViewportProps> = ({
       if (showSmokeMesh !== appliedSmokeVisible) {
         appliedSmokeVisible = showSmokeMesh;
         dustMesh.visible = showSmokeMesh;
+        skidMesh.visible = showSmokeMesh;
         if (!showSmokeMesh) {
           for (let i = 0; i < DUST_COUNT; i++) {
             dustPool[i].life = 0;
           }
+          clearSkidMarks();
         }
       }
     };
@@ -454,6 +535,7 @@ export const GameViewport: React.FC<GameViewportProps> = ({
       });
       racerRigs.clear();
       racers = [];
+      clearSkidMarks();
     };
 
     const rebuildTrackIfNeeded = () => {
@@ -476,13 +558,13 @@ export const GameViewport: React.FC<GameViewportProps> = ({
 
       const farDist =
         st.graphics.viewDistance === 'short'
-          ? 210
+          ? 270
           : st.graphics.viewDistance === 'medium'
-            ? 340
-            : 520;
-      scene.fog = new THREE.Fog(spec.fogColor, farDist * 0.38, farDist);
-      cam1.far = farDist + 60;
-      cam2.far = farDist + 60;
+            ? 440
+            : 690;
+      scene.fog = new THREE.Fog(spec.fogColor, farDist * 0.4, farDist);
+      cam1.far = farDist + 80;
+      cam2.far = farDist + 80;
       cam1.updateProjectionMatrix();
       cam2.updateProjectionMatrix();
 
@@ -526,7 +608,7 @@ export const GameViewport: React.FC<GameViewportProps> = ({
       const cast = !isSoftwareGl && !compiled.spec.isNight && st.graphics.shadows !== 'off';
       showroomRig = buildBlockyCar(cId, eco, cast);
       const start = compiled.samples[0];
-      showroomRig.group.position.set(start.point.x, 0, start.point.z);
+      showroomRig.group.position.set(start.point.x, start.point.y, start.point.z);
       showroomRig.group.rotation.y = Math.atan2(-start.tangent.x, -start.tangent.z);
       scene.add(showroomRig.group);
       showroomCarId = cId;
@@ -640,9 +722,16 @@ export const GameViewport: React.FC<GameViewportProps> = ({
           initialHealth: propsRef.current.initialP1Health,
         });
         const aiNames = ['K.Sato', 'M.Rossi', 'A.Vance', 'L.Chen'];
-        const aiCars: CarId[] = ['volt-x', 'drift-86', 'trailblazer', 'titan', 'rally-evo', 'neon-blade'].filter(
-          (id) => id !== c1,
-        ) as CarId[];
+        const aiCars: CarId[] = [
+          'volt-x',
+          'drift-86',
+          'sakura-s15',
+          'magma-gt',
+          'rally-evo',
+          'neon-blade',
+          'phantom-viper',
+          'pulsar-ev',
+        ].filter((id) => id !== c1) as CarId[];
         for (let i = 0; i < 3; i++) {
           roster.push({
             id: `ai-${i}`,
@@ -660,7 +749,7 @@ export const GameViewport: React.FC<GameViewportProps> = ({
 
       racers.forEach((r) => {
         const rig = buildBlockyCar(r.carId, eco, cast);
-        rig.group.position.set(r.x, 0, r.z);
+        rig.group.position.set(r.x, r.y, r.z);
         rig.group.rotation.y = r.yaw;
         scene.add(rig.group);
         racerRigs.set(r.id, rig);
@@ -671,16 +760,16 @@ export const GameViewport: React.FC<GameViewportProps> = ({
       if (p1) {
         const backX = Math.sin(p1.yaw) * 9.5;
         const backZ = Math.cos(p1.yaw) * 9.5;
-        cam1.position.set(p1.x + backX, 4.4, p1.z + backZ);
-        _camLookSmoothP1.set(p1.x, 1.2, p1.z);
+        cam1.position.set(p1.x + backX, p1.y + 4.4, p1.z + backZ);
+        _camLookSmoothP1.set(p1.x, p1.y + 1.2, p1.z);
         cam1.lookAt(_camLookSmoothP1);
       }
       const p2 = racers.find((r) => r.isLocalP2);
       if (p2) {
         const backX = Math.sin(p2.yaw) * 9.5;
         const backZ = Math.cos(p2.yaw) * 9.5;
-        cam2.position.set(p2.x + backX, 4.4, p2.z + backZ);
-        _camLookSmoothP2.set(p2.x, 1.2, p2.z);
+        cam2.position.set(p2.x + backX, p2.y + 4.4, p2.z + backZ);
+        _camLookSmoothP2.set(p2.x, p2.y + 1.2, p2.z);
         cam2.lookAt(_camLookSmoothP2);
       }
 
@@ -754,9 +843,9 @@ export const GameViewport: React.FC<GameViewportProps> = ({
       cam.updateProjectionMatrix();
 
       if (modeCam === 'hood') {
-        _camDesiredPos.set(racer.x + fx * 0.4, 1.85, racer.z + fz * 0.4);
+        _camDesiredPos.set(racer.x + fx * 0.4, racer.y + 1.85, racer.z + fz * 0.4);
         cam.position.lerp(_camDesiredPos, Math.min(1, dt * 18));
-        _camLookTarget.set(racer.x + fx * 22, 1.3, racer.z + fz * 22);
+        _camLookTarget.set(racer.x + fx * 22, racer.y + 1.3, racer.z + fz * 22);
         lookSmooth.lerp(_camLookTarget, Math.min(1, dt * 18));
         cam.lookAt(lookSmooth);
       } else {
@@ -769,12 +858,12 @@ export const GameViewport: React.FC<GameViewportProps> = ({
 
         _camDesiredPos.set(
           racer.x - fx * dist + shake,
-          heightOffset + shake * 0.5,
+          racer.y + heightOffset + shake * 0.5,
           racer.z - fz * dist,
         );
         const dampLambda = 1 - Math.exp(-9.5 * dt);
         cam.position.lerp(_camDesiredPos, dampLambda);
-        _camLookTarget.set(racer.x + fx * 6, 1.35, racer.z + fz * 6);
+        _camLookTarget.set(racer.x + fx * 6, racer.y + 1.35, racer.z + fz * 6);
         lookSmooth.lerp(_camLookTarget, 1 - Math.exp(-12 * dt));
         cam.lookAt(lookSmooth);
       }
@@ -871,12 +960,12 @@ export const GameViewport: React.FC<GameViewportProps> = ({
           cam1.updateProjectionMatrix();
           cam1.position.set(
             base.x + Math.cos(showroomOrbitAngle) * r,
-            2.95,
+            base.y + 2.95,
             base.z + Math.sin(showroomOrbitAngle) * r,
           );
-          cam1.lookAt(base.x, 1.0, base.z);
+          cam1.lookAt(base.x, base.y + 1.0, base.z);
           sunLight.target.position.copy(base);
-          sunLight.position.set(base.x + 40, 75, base.z + 35);
+          sunLight.position.set(base.x + 40, base.y + 75, base.z + 35);
         }
 
         renderer.setScissorTest(false);
@@ -976,9 +1065,18 @@ export const GameViewport: React.FC<GameViewportProps> = ({
 
               if (allowDriftSmoke && r.drifting && r.speed > 18 && Math.random() < 0.72) {
                 spawnSmokePuff(r, 'drift');
+                stampSkidMarks(r, false);
               }
-              if (allowBrakeAnim && r.braking > 0.1 && r.speed > 6 && Math.random() < 0.72) {
-                spawnSmokePuff(r, 'brake');
+              if (allowBrakeAnim && r.braking > 0.1 && r.speed > 6) {
+                if (Math.random() < 0.78) {
+                  spawnSmokePuff(r, 'brake');
+                }
+                if (r.braking > 0.25 && r.speed > 12) {
+                  stampSkidMarks(r, true);
+                }
+                if (r.brakeHeat > 0.65 && Math.random() < 0.45) {
+                  spawnSmokePuff(r, 'spark');
+                }
               }
               if (
                 allowBrakeAnim &&
@@ -999,15 +1097,19 @@ export const GameViewport: React.FC<GameViewportProps> = ({
               }
               if (st.graphics.particles && r.drifting && r.speed > 24 && Math.random() < 0.35) {
                 spawnSmokePuff(r, 'drift');
+                stampSkidMarks(r, false);
               }
-              if ((st.graphics.brakingAnimation ?? true) && r.braking > 0.25 && r.speed > 12 && Math.random() < 0.35) {
-                spawnSmokePuff(r, 'brake');
+              if ((st.graphics.brakingAnimation ?? true) && r.braking > 0.25 && r.speed > 12) {
+                if (Math.random() < 0.38) spawnSmokePuff(r, 'brake');
+                stampSkidMarks(r, true);
               }
             } else if (r.targetX !== undefined && r.targetZ !== undefined && r.targetYaw !== undefined) {
               // Smooth remote multiplayer car interpolation
               const alpha = 1 - Math.exp(-14 * dt);
               r.x = THREE.MathUtils.lerp(r.x, r.targetX, alpha);
               r.z = THREE.MathUtils.lerp(r.z, r.targetZ, alpha);
+              const remoteClosest = findClosestTrackSample(compiled, r.x, r.z);
+              r.y = THREE.MathUtils.lerp(r.y, remoteClosest.sample.point.y, alpha);
               let dy = r.targetYaw - r.yaw;
               while (dy > Math.PI) dy -= Math.PI * 2;
               while (dy < -Math.PI) dy += Math.PI * 2;
@@ -1026,24 +1128,32 @@ export const GameViewport: React.FC<GameViewportProps> = ({
           const raceAnimOn = st.graphics.raceAnimation ?? true;
           const brakeAnimOn = st.graphics.brakingAnimation ?? true;
 
-          // Update 3D car rigs from physics bodies (including dirt condition, race & braking animations)
+          // Update 3D car rigs from physics bodies (including dirt condition, race & realistic braking animations)
           racers.forEach((r) => {
             const rig = racerRigs.get(r.id);
             if (!rig) return;
-            rig.group.position.set(r.x, 0, r.z);
+            rig.group.position.set(r.x, r.y, r.z);
+            rig.group.rotation.order = 'YXZ';
             rig.group.rotation.y = r.yaw;
+            rig.group.rotation.x = r.slopePitch;
             rig.setCondition(r.hullHealth, brakeAnimOn);
-            rig.setBrakingGlow(r.braking, brakeAnimOn);
+            rig.setBrakingGlow(r.braking, brakeAnimOn, r.brakeHeat);
 
             const targetRoll = raceAnimOn
               ? -r.steerVisual * 0.135 * Math.min(1, r.speed / 38)
               : 0;
-            // Nose-dive forward (-X pitch) when brakingAnimation is ON, subtle rear squat (+X pitch) on throttle when raceAnimation is ON
+            // Realistic forward nose-dive (-X pitch) + front suspension compression dip (bodyGroup.y)
             const targetPitch =
-              brakeAnimOn && r.braking > 0.1 && r.speed > 4
-                ? -0.115 * r.braking * Math.min(1, r.speed / 24)
+              brakeAnimOn && r.brakeDive > 0.04
+                ? -0.145 * r.brakeDive
                 : raceAnimOn && r.throttleApplied > 0.1
-                  ? 0.045 * r.throttleApplied
+                  ? 0.048 * r.throttleApplied
+                  : 0;
+            const targetBodyDip =
+              brakeAnimOn && r.brakeDive > 0.04
+                ? -0.075 * r.brakeDive
+                : raceAnimOn && r.throttleApplied > 0.1
+                  ? 0.02 * r.throttleApplied
                   : 0;
 
             rig.bodyGroup.rotation.z = THREE.MathUtils.damp(
@@ -1055,7 +1165,13 @@ export const GameViewport: React.FC<GameViewportProps> = ({
             rig.bodyGroup.rotation.x = THREE.MathUtils.damp(
               rig.bodyGroup.rotation.x,
               targetPitch,
-              12,
+              13,
+              dt,
+            );
+            rig.bodyGroup.position.y = THREE.MathUtils.damp(
+              rig.bodyGroup.position.y,
+              targetBodyDip,
+              14,
               dt,
             );
 
@@ -1066,7 +1182,7 @@ export const GameViewport: React.FC<GameViewportProps> = ({
             });
           });
 
-          // Update drift, braking & damaged-car smoke pool
+          // Update drift, braking, spark & damaged-car smoke pool
           if (st.graphics.particles || brakeAnimOn) {
             let anySmokeActive = false;
             for (let i = 0; i < DUST_COUNT; i++) {
@@ -1078,11 +1194,12 @@ export const GameViewport: React.FC<GameViewportProps> = ({
                 p.z += p.vz * dt;
                 p.y += dt * 2.1;
                 const progress = 1 - Math.max(0, p.life / p.maxLife);
-                // Expand quickly into blocky smoke puff then shrink cleanly
                 const s =
-                  progress < 0.35
-                    ? 0.65 + (progress / 0.35) * 1.15
-                    : Math.max(0.01, (1 - (progress - 0.35) / 0.65) * 1.8);
+                  p.color === _smokeColorSpark
+                    ? Math.max(0.05, (1 - progress) * 0.45)
+                    : progress < 0.35
+                      ? 0.65 + (progress / 0.35) * 1.15
+                      : Math.max(0.01, (1 - (progress - 0.35) / 0.65) * 1.8);
                 _dustDummy.position.set(p.x, p.y, p.z);
                 _dustDummy.scale.setScalar(s);
                 dustMesh.setColorAt(i, p.color);
@@ -1097,15 +1214,19 @@ export const GameViewport: React.FC<GameViewportProps> = ({
               dustMesh.instanceMatrix.needsUpdate = true;
               if (dustMesh.instanceColor) dustMesh.instanceColor.needsUpdate = true;
             }
+            if (skidDirty) {
+              skidMesh.instanceMatrix.needsUpdate = true;
+              skidDirty = false;
+            }
           }
 
           // Update audio engine from P1
           const p1 = racers.find((r) => r.isLocalP1);
           if (p1) {
             const spec = CAR_MAP[p1.carId] ?? CAR_MAP['apex-gt1'];
-            audioEngine.updateEngine(p1.speed / spec.topSpeed, p1.drifting);
-            sunLight.target.position.set(p1.x, 0, p1.z);
-            sunLight.position.set(p1.x + 55, 95, p1.z + 45);
+            audioEngine.updateEngine(p1.speed / spec.topSpeed, p1.drifting, p1.braking);
+            sunLight.target.position.set(p1.x, p1.y, p1.z);
+            sunLight.position.set(p1.x + 55, p1.y + 95, p1.z + 45);
           }
 
           // Network 20Hz state push in multiplayer
@@ -1113,7 +1234,7 @@ export const GameViewport: React.FC<GameViewportProps> = ({
             lastNetSyncAt = now;
             multiplayerClient.sendRaceState({
               x: p1.x,
-              y: 0,
+              y: p1.y,
               z: p1.z,
               yaw: p1.yaw,
               speed: p1.speed,
@@ -1289,6 +1410,8 @@ export const GameViewport: React.FC<GameViewportProps> = ({
       }
       dustGeo.dispose();
       dustMat.dispose();
+      skidGeo.dispose();
+      skidMat.dispose();
       envTex.dispose();
       disposeCachedTextures();
       audioEngine.setEngineRunning(false);

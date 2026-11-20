@@ -313,9 +313,9 @@ export const MultiplayerLobby: React.FC<MultiplayerLobbyProps> = ({
 
                 <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4 space-y-3">
                   <div className="text-xs font-semibold text-slate-300">
-                    Circuit {isHost ? '(Host Select)' : '(Host Controlled)'}
+                    Circuit ({TRACKS.length}) {isHost ? '(Host Select)' : '(Host Controlled)'}
                   </div>
-                  <div className="space-y-2">
+                  <div className="max-h-44 overflow-y-auto custom-scroll touch-pan-y pr-1 space-y-1.5">
                     {TRACKS.map((t) => (
                       <button
                         key={t.id}

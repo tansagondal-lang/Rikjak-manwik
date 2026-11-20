@@ -46,7 +46,12 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
                 Global Leaderboards
               </h2>
               <p className="text-xs text-slate-400">
-                {connected ? 'Live WebSocket Sync Active' : 'Connecting to Leaderboard Feed'} · Top Circuit Times
+                {connected
+                  ? 'Live WebSocket Sync Active'
+                  : typeof navigator !== 'undefined' && !navigator.onLine
+                    ? 'Offline — Showing Cached Times'
+                    : 'Connecting to Leaderboard Feed'}{' '}
+                · Top Circuit Times
               </p>
             </div>
           </div>

@@ -122,6 +122,25 @@ export function getContactShadowTexture(): THREE.CanvasTexture {
   );
 }
 
+export function getBrakeGlowTexture(): THREE.CanvasTexture {
+  return createCanvasTexture(
+    'brake_ground_glow',
+    64,
+    64,
+    (ctx, w, h) => {
+      const grad = ctx.createRadialGradient(w / 2, h / 2, 2, w / 2, h / 2, w / 2);
+      grad.addColorStop(0, 'rgba(255, 59, 48, 0.85)');
+      grad.addColorStop(0.45, 'rgba(239, 68, 68, 0.35)');
+      grad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+    },
+    1,
+    1,
+    true,
+  );
+}
+
 export function disposeCachedTextures(): void {
   textureCache.forEach((tex) => tex.dispose());
   textureCache.clear();

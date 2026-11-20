@@ -25,10 +25,37 @@ class MultiplayerClient {
   private listeners = new Set<Listener>();
   private reconnectTimer: number | null = null;
   private queue: string[] = [];
+  private networkListenersBound = false;
   public clientId: string | null = null;
   public connected = false;
 
+  private bindNetworkListeners(): void {
+    if (this.networkListenersBound || typeof window === 'undefined') return;
+    this.networkListenersBound = true;
+
+    window.addEventListener('online', () => {
+      if (this.reconnectTimer !== null) {
+        window.clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      this.connect();
+    });
+
+    window.addEventListener('offline', () => {
+      if (this.reconnectTimer !== null) {
+        window.clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      this.connected = false;
+    });
+  }
+
   public connect(): void {
+    this.bindNetworkListeners();
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      this.connected = false;
+      return;
+    }
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -65,6 +92,9 @@ class MultiplayerClient {
       ws.onclose = () => {
         this.connected = false;
         this.ws = null;
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+          return;
+        }
         if (this.reconnectTimer === null) {
           this.reconnectTimer = window.setTimeout(() => {
             this.reconnectTimer = null;
@@ -77,7 +107,7 @@ class MultiplayerClient {
         ws.close();
       };
     } catch {
-      // ignore
+      // ignore offline or restricted WebSocket errors
     }
   }
 
@@ -97,7 +127,9 @@ class MultiplayerClient {
       if (this.queue.length < 24) {
         this.queue.push(raw);
       }
-      this.connect();
+      if (typeof navigator === 'undefined' || navigator.onLine) {
+        this.connect();
+      }
     }
   }
 

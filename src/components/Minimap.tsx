@@ -15,8 +15,8 @@ export const Minimap: React.FC<MinimapProps> = ({ trackId, dots, highContrast })
   const layout = useMemo(() => {
     const compiled = getCompiledTrack(trackId);
     const samples = compiled.samples;
-    // Downsample to 36 crisp low-poly vertices for minimal SVG DOM & zero lag on 512MB phones
-    const step = Math.max(1, Math.floor(samples.length / 36));
+    // Downsample to 48 crisp low-poly vertices for minimal SVG DOM & zero lag on 512MB phones
+    const step = Math.max(1, Math.floor(samples.length / 48));
     const polyPts: Array<{ x: number; z: number }> = [];
 
     let minX = Infinity;

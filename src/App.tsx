@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { LeaderboardModal } from './components/LeaderboardModal';
 import { MainMenu } from './components/MainMenu';
 import { MultiplayerLobby } from './components/MultiplayerLobby';
+import { OfflineIndicator } from './components/OfflineIndicator';
 import { RaceHUD } from './components/RaceHUD';
 import { SettingsModal } from './components/SettingsModal';
 import {
@@ -12,6 +13,7 @@ import {
   saveGarageProgress,
 } from './data/cars';
 import { loadSettings, saveSettings } from './data/defaultSettings';
+import { getCompiledTrack } from './data/tracks';
 import { audioEngine } from './engine/audio';
 import { GameViewport, TouchControlState } from './engine/GameViewport';
 import { multiplayerClient, RoomSummary } from './services/multiplayer';
@@ -45,6 +47,27 @@ const INITIAL_TEL: RaceTelemetry = {
   estimatedRamMb: 48,
 };
 
+const LEADERBOARD_CACHE_KEY = 'racing_car_1_leaderboard_cache_v1';
+
+function loadCachedLeaderboard(): LeaderboardEntry[] {
+  try {
+    const raw = localStorage.getItem(LEADERBOARD_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as LeaderboardEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCachedLeaderboard(entries: LeaderboardEntry[]): void {
+  try {
+    localStorage.setItem(LEADERBOARD_CACHE_KEY, JSON.stringify(entries.slice(0, 50)));
+  } catch {
+    // ignore quota errors
+  }
+}
+
 export default function App() {
   const [settings, setSettings] = useState<AllSettings>(() => loadSettings());
   const [garage, setGarage] = useState<GarageProgress>(() => loadGarageProgress());
@@ -66,7 +89,7 @@ export default function App() {
   const [room, setRoom] = useState<RoomInfo | null>(null);
   const [roomsList, setRoomsList] = useState<RoomSummary[]>([]);
   const [mpError, setMpError] = useState<string | null>(null);
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>(() => loadCachedLeaderboard());
 
   // Live Race HUD state
   const [p1Tel, setP1Tel] = useState<RaceTelemetry>(INITIAL_TEL);
@@ -130,12 +153,27 @@ export default function App() {
         setMpError(msg.reason);
       } else if (msg.type === 'leaderboard:all') {
         setLeaderboard(msg.entries);
+        saveCachedLeaderboard(msg.entries);
       } else if (msg.type === 'leaderboard:updated') {
         setLeaderboard(msg.entries);
+        saveCachedLeaderboard(msg.entries);
       } else if (msg.type === 'error') {
         setMpError(msg.message);
       }
     });
+
+    // Fetch REST leaderboard so Service Worker NetworkFirst cache stays warm for offline viewing
+    fetch('/api/leaderboard')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { entries?: LeaderboardEntry[] } | null) => {
+        if (data?.entries && Array.isArray(data.entries)) {
+          setLeaderboard(data.entries);
+          saveCachedLeaderboard(data.entries);
+        }
+      })
+      .catch(() => {
+        // Offline or server unavailable; cached localStorage entries remain shown
+      });
 
     // Support direct ?room=XXXX invite link for Local Host LAN / Online sharing
     const params = new URLSearchParams(window.location.search);
@@ -220,9 +258,17 @@ export default function App() {
 
   const handleRaceFinish = useCallback(
     (raceResults: RaceResultItem[]) => {
+      const activeTrackId =
+        mode === 'multiplayer' && room ? room.trackId : selectedTrack;
+      const trackLen = getCompiledTrack(activeTrackId).totalLength;
       const p1Res = raceResults.find((r) => r.isLocalP1);
       const earned = p1Res
-        ? getRaceRewardCoins(p1Res.position, raceResults.length, mode === 'multiplayer')
+        ? getRaceRewardCoins(
+            p1Res.position,
+            raceResults.length,
+            mode === 'multiplayer',
+            trackLen,
+          )
         : 0;
       setLastEarnedCoins(earned);
       setResults(raceResults);
@@ -239,7 +285,7 @@ export default function App() {
         }));
       }
     },
-    [mode],
+    [mode, room, selectedTrack],
   );
 
   const handleCycleCamera = useCallback(() => {
@@ -408,6 +454,8 @@ export default function App() {
           onClose={() => setShowSettings(false)}
         />
       )}
+
+      <OfflineIndicator />
     </div>
   );
 }

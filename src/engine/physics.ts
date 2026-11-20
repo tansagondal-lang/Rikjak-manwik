@@ -19,6 +19,7 @@ export interface RacerBody {
   x: number;
   y: number;
   z: number;
+  slopePitch: number;
   vx: number;
   vz: number;
   yaw: number;
@@ -32,6 +33,8 @@ export interface RacerBody {
   wrongWay: boolean;
   drifting: boolean;
   braking: number; // 0..1 active braking intensity
+  brakeHeat: number; // 0..1 rotor heat buildup from hard braking
+  brakeDive: number; // 0..1 smooth suspension weight transfer forward
   throttleApplied: number; // 0..1 active throttle intensity
   boostCharge: number;
   boostTimer: number;
@@ -64,23 +67,21 @@ export function createGridRacers(
     aiPaceFactor?: number;
   }>,
 ): RacerBody[] {
-  const startSample = compiled.samples[0];
-  const baseYaw = Math.atan2(-startSample.tangent.x, -startSample.tangent.z);
+  const n = compiled.samples.length;
+  const segLen = Math.max(0.5, compiled.totalLength / n);
 
   return entries.map((entry, idx) => {
     const row = Math.floor(idx / 2);
     const col = idx % 2 === 0 ? -1 : 1;
     const lateral = col * 3.2;
     const backOffset = 6 + row * 7.2;
+    const samplesBack = Math.max(1, Math.round(backOffset / segLen));
+    const gridIdx = (n - (samplesBack % n)) % n;
+    const gridSample = compiled.samples[gridIdx];
+    const gridYaw = Math.atan2(-gridSample.tangent.x, -gridSample.tangent.z);
 
-    const x =
-      startSample.point.x +
-      startSample.right.x * lateral -
-      startSample.tangent.x * backOffset;
-    const z =
-      startSample.point.z +
-      startSample.right.z * lateral -
-      startSample.tangent.z * backOffset;
+    const x = gridSample.point.x + gridSample.right.x * lateral;
+    const z = gridSample.point.z + gridSample.right.z * lateral;
 
     return {
       id: entry.id,
@@ -90,21 +91,24 @@ export function createGridRacers(
       isLocalP1: entry.isLocalP1,
       isLocalP2: entry.isLocalP2,
       x,
-      y: 0,
+      y: gridSample.point.y,
       z,
+      slopePitch: 0,
       vx: 0,
       vz: 0,
-      yaw: baseYaw,
+      yaw: gridYaw,
       speed: 0,
       steerVisual: 0,
       wheelSpin: 0,
       lap: 1,
-      lastSampleIdx: compiled.samples.length - 2,
+      lastSampleIdx: gridIdx,
       furthestCheckpoint: 0,
       progress: -(row * 0.015 + (idx % 2) * 0.005),
       wrongWay: false,
       drifting: false,
       braking: 0,
+      brakeHeat: 0,
+      brakeDive: 0,
       throttleApplied: 0,
       boostCharge: 0,
       boostTimer: 0,
@@ -125,7 +129,7 @@ export function computeAiInput(
   compiled: CompiledTrack,
 ): RacerInput {
   const { index } = findClosestTrackSample(compiled, racer.x, racer.z);
-  const lookAhead = 12;
+  const lookAhead = 8;
   const targetSample = compiled.samples[(index + lookAhead) % compiled.samples.length];
 
   const tx = targetSample.point.x + targetSample.right.x * racer.aiLaneOffset;
@@ -200,6 +204,23 @@ export function stepRacerPhysics(
   racer.throttleApplied = input.throttle;
   racer.braking = input.brake > 0 && forwardSpeed > -0.5 ? input.brake : 0;
 
+  // Brake rotor heat buildup & realistic suspension weight transfer
+  const hardBrakeLoad =
+    racer.braking > 0.1 && forwardSpeed > 8
+      ? racer.braking * Math.min(1, forwardSpeed / Math.max(1, spec.topSpeed))
+      : 0;
+  if (hardBrakeLoad > 0) {
+    racer.brakeHeat = Math.min(1, racer.brakeHeat + clampedDt * (0.95 * hardBrakeLoad + 0.15));
+  } else {
+    racer.brakeHeat = Math.max(0, racer.brakeHeat - clampedDt * 0.42);
+  }
+  const targetDive =
+    racer.braking > 0.1 && forwardSpeed > 4
+      ? racer.braking * Math.min(1, forwardSpeed / 32)
+      : 0;
+  const diveRate = targetDive > racer.brakeDive ? 11 : 7.5;
+  racer.brakeDive += (targetDive - racer.brakeDive) * Math.min(1, clampedDt * diveRate);
+
   let accel = 0;
   if (input.throttle > 0) {
     accel += input.throttle * effectiveAccel * boostMult;
@@ -268,26 +289,57 @@ export function stepRacerPhysics(
 
   racer.x += racer.vx * clampedDt;
   racer.z += racer.vz * clampedDt;
-  racer.wheelSpin += clampedForward * clampedDt * 1.4;
+  // Realistic wheel rotation slows during ABS / wheel-lock hard braking
+  const wheelSlipScale =
+    racer.braking > 0.25 && clampedForward > 10
+      ? Math.max(0.28, 1 - racer.braking * 0.62)
+      : 1;
+  racer.wheelSpin += clampedForward * clampedDt * 1.4 * wheelSlipScale;
 
   // Track bounds & soft wall collision
   const closest = findClosestTrackSample(compiled, racer.x, racer.z);
+  racer.y += (closest.sample.point.y - racer.y) * Math.min(1, clampedDt * 18);
+  const headingDotSlope =
+    nfx * closest.sample.tangent.x + nfz * closest.sample.tangent.z;
+  const rawPitch =
+    Math.asin(Math.max(-0.4, Math.min(0.4, closest.sample.tangent.y))) *
+    (headingDotSlope >= 0 ? 1 : -1);
+  racer.slopePitch += (rawPitch - racer.slopePitch) * Math.min(1, clampedDt * 10);
+
   const maxLateral = compiled.spec.width * 0.5 + 0.65;
+  const offX = racer.x - closest.sample.point.x;
+  const offZ = racer.z - closest.sample.point.z;
+  const offDist = Math.hypot(offX, offZ);
 
-  if (Math.abs(closest.lateralOffset) > maxLateral) {
-    const sign = Math.sign(closest.lateralOffset);
-    racer.x = closest.sample.point.x + closest.sample.right.x * sign * maxLateral;
-    racer.z = closest.sample.point.z + closest.sample.right.z * sign * maxLateral;
+  if (offDist > maxLateral && offDist > 1e-5) {
+    // Clamp radially along the true wall normal from the continuous centerline
+    // so forward tangential motion is preserved and the car slides smoothly along walls
+    const nx = offX / offDist;
+    const nz = offZ / offDist;
+    racer.x = closest.sample.point.x + nx * maxLateral;
+    racer.z = closest.sample.point.z + nz * maxLateral;
 
-    // Damp outward velocity component
-    const outVel = racer.vx * closest.sample.right.x + racer.vz * closest.sample.right.z;
-    if (outVel * sign > 0) {
-      racer.vx -= closest.sample.right.x * outVel * 1.25;
-      racer.vz -= closest.sample.right.z * outVel * 1.25;
-      racer.vx *= 0.85;
-      racer.vz *= 0.85;
-      if (Math.abs(outVel) > 10) {
-        const strength = Math.min(1, Math.abs(outVel) / 40);
+    // Damp outward velocity component & deflect nose gently along barrier
+    const outVel = racer.vx * nx + racer.vz * nz;
+    if (outVel > 0) {
+      racer.vx -= nx * outVel * 1.12;
+      racer.vz -= nz * outVel * 1.12;
+      if (outVel > 2.0) {
+        racer.vx *= 0.92;
+        racer.vz *= 0.92;
+      }
+      if (headingDotSlope >= -0.2 && input.throttle > 0.1) {
+        const trackYaw = Math.atan2(
+          -closest.sample.tangent.x,
+          -closest.sample.tangent.z,
+        );
+        let yawDiff = trackYaw - racer.yaw;
+        while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
+        while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
+        racer.yaw += yawDiff * Math.min(1, clampedDt * 3.5);
+      }
+      if (outVel > 10) {
+        const strength = Math.min(1, outVel / 40);
         if (racer.isHuman) {
           applyHullDamage(racer, strength * 0.7);
         }
@@ -339,7 +391,11 @@ export function stepRacerPhysics(
   }
 
   racer.lastSampleIdx = closest.index;
-  racer.progress = (racer.lap - 1) + closest.sample.t;
+  const lapRelT =
+    racer.lap === 1 && racer.furthestCheckpoint === 0 && closest.index > totalSamples * 0.85
+      ? closest.sample.t - 1
+      : closest.sample.t;
+  racer.progress = (racer.lap - 1) + lapRelT;
 }
 
 export function resolveCarCollisions(
@@ -395,9 +451,13 @@ export function resolveCarCollisions(
 export function respawnRacerOnTrack(racer: RacerBody, compiled: CompiledTrack): void {
   const { sample } = findClosestTrackSample(compiled, racer.x, racer.z);
   racer.x = sample.point.x;
+  racer.y = sample.point.y;
   racer.z = sample.point.z;
+  racer.slopePitch = 0;
   racer.vx = 0;
   racer.vz = 0;
   racer.speed = 0;
+  racer.braking = 0;
+  racer.brakeDive = 0;
   racer.yaw = Math.atan2(-sample.tangent.x, -sample.tangent.z);
 }

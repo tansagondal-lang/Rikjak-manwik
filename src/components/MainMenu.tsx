@@ -14,8 +14,9 @@ import {
   Wrench,
 } from 'lucide-react';
 import { CARS, CAR_MAP, getRepairCostForCar } from '../data/cars';
-import { TRACKS, TRACK_MAP } from '../data/tracks';
+import { getTrackLengthKm, TRACKS, TRACK_MAP } from '../data/tracks';
 import { getHealthAbilityFactor } from '../engine/physics';
+import { PWAInstallButton } from './PWAInstallButton';
 import {
   AllSettings,
   CarId,
@@ -67,10 +68,11 @@ export const MainMenu: React.FC<MainMenuProps> = ({
 }) => {
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState<'cars' | 'tracks'>('cars');
+  const [carFilter, setCarFilter] = useState<'all' | 'owned' | 'shop'>('all');
 
   const currentCar = CAR_MAP[inspectedCar] ?? CARS[0];
   const equippedCar = CAR_MAP[selectedCar] ?? CARS[0];
-  const currentTrack = TRACK_MAP[selectedTrack];
+  const currentTrack = TRACK_MAP[selectedTrack] ?? TRACKS[0];
 
   const isOwned = garage.ownedCars.includes(currentCar.id);
   const isEquipped = selectedCar === currentCar.id;
@@ -80,6 +82,12 @@ export const MainMenu: React.FC<MainMenuProps> = ({
   const canAffordRepair = garage.coins >= repairCost;
 
   const ownedCarsList = CARS.filter((c) => garage.ownedCars.includes(c.id));
+  const filteredCars =
+    carFilter === 'owned'
+      ? ownedCarsList
+      : carFilter === 'shop'
+        ? CARS.filter((c) => !garage.ownedCars.includes(c.id))
+        : CARS;
 
   return (
     <div className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between">
@@ -108,7 +116,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
             }}
             className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
           >
-            Circuits
+            Circuits ({TRACKS.length})
           </button>
           <button
             onClick={onOpenMultiplayer}
@@ -146,6 +154,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
           >
             <Settings className="w-4 h-4" />
           </button>
+          <PWAInstallButton />
           <button
             onClick={() => onStartRace('solo')}
             className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs sm:text-sm font-bold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
@@ -268,8 +277,8 @@ export const MainMenu: React.FC<MainMenuProps> = ({
               >
                 <ShoppingCart className="w-3.5 h-3.5" />
                 {canAffordBuy
-                  ? `Buy Car · ${currentCar.price} Coins`
-                  : `Need ${currentCar.price} Coins`}
+                  ? `Buy Car · ${currentCar.price.toLocaleString()} Coins`
+                  : `Need ${currentCar.price.toLocaleString()} Coins`}
               </button>
             ) : (
               <>
@@ -347,7 +356,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                       : 'text-slate-300 hover:text-white'
                   }`}
                 >
-                  Select Circuit
+                  Circuits ({TRACKS.length} Themes)
                 </button>
               </div>
 
@@ -380,8 +389,36 @@ export const MainMenu: React.FC<MainMenuProps> = ({
             {/* Selector Row */}
             {activeTab === 'cars' ? (
               <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-1 bg-slate-900 p-0.5 rounded-lg">
+                    {(
+                      [
+                        { id: 'all', label: `All (${CARS.length})` },
+                        { id: 'owned', label: `Owned (${ownedCarsList.length})` },
+                        { id: 'shop', label: `Coin Shop (${CARS.length - ownedCarsList.length})` },
+                      ] as const
+                    ).map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => setCarFilter(f.id)}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                          carFilter === f.id
+                            ? 'bg-slate-700 text-white'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="hidden sm:inline text-[11px] text-slate-400">
+                    All vehicles unlockable with race Coins
+                  </span>
+                </div>
+
                 <div className="max-h-44 sm:max-h-52 overflow-y-auto custom-scroll touch-pan-y pr-1 grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2">
-                  {CARS.map((car) => {
+                  {filteredCars.map((car) => {
                     const owned = garage.ownedCars.includes(car.id);
                     const equipped = selectedCar === car.id;
                     const inspected = inspectedCar === car.id;
@@ -427,7 +464,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                             </>
                           ) : (
                             <>
-                              <span className="text-emerald-400 font-semibold">{car.price}c</span>
+                              <span className="text-emerald-400 font-semibold">{car.price.toLocaleString()}c</span>
                               <span className="text-slate-500">SPD {car.stats.speed}</span>
                             </>
                           )}
@@ -461,20 +498,31 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 </div>
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div className="max-h-48 sm:max-h-56 overflow-y-auto custom-scroll touch-pan-y pr-1 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2">
                 {TRACKS.map((track) => (
                   <button
                     key={track.id}
                     onClick={() => onSelectTrack(track.id)}
-                    className={`p-3 rounded-lg border text-left transition-colors ${
+                    className={`p-2.5 rounded-lg border text-left transition-colors ${
                       selectedTrack === track.id
                         ? 'bg-cyan-500/15 border-cyan-400 text-white'
                         : 'bg-slate-900/90 border-slate-800 text-slate-300 hover:border-slate-600'
                     }`}
                   >
-                    <div className="font-display font-bold text-sm">{track.name}</div>
-                    <div className="text-xs text-slate-400 mt-0.5">
-                      {track.environment} · {track.laps} Laps
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        style={{ backgroundColor: track.curbColorA }}
+                        className="w-2.5 h-2.5 rounded-sm shrink-0"
+                      />
+                      <span className="font-display font-bold text-xs truncate">
+                        {track.name}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-1 truncate">
+                      {track.environment}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5 font-mono-tabular">
+                      {getTrackLengthKm(track.id)} km · {track.laps} Laps · {track.isNight ? 'Night' : 'Day'}
                     </div>
                   </button>
                 ))}

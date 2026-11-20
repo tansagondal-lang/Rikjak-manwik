@@ -20,9 +20,65 @@ export type CarId =
   | 'mint-coupe'
   | 'cobalt-buggy'
   | 'obsidian-f1'
-  | 'aurora-hyper';
+  | 'aurora-hyper'
+  | 'baja-trophy'
+  | 'cyber-courier'
+  | 'sakura-s15'
+  | 'glacier-rally'
+  | 'magma-gt'
+  | 'thunder-pickup'
+  | 'emerald-lmp'
+  | 'phantom-viper'
+  | 'pulsar-ev'
+  | 'storm-brawler'
+  | 'gold-sovereign'
+  | 'valkyrie-aero'
+  | 'zenith-x9'
+  | 'nova-apex';
 
-export type TrackId = 'sunstone' | 'alpine' | 'harbor';
+export type TrackId =
+  | 'sunstone'
+  | 'alpine'
+  | 'harbor'
+  | 'neon-metro'
+  | 'sakura-valley'
+  | 'arctic-glacier'
+  | 'volcano-caldera'
+  | 'tropical-atoll'
+  | 'canyon-dam'
+  | 'autumn-ridge'
+  | 'cyber-grid'
+  | 'egypt-dunes'
+  | 'emerald-jungle'
+  | 'orbital-station'
+  | 'snow-summit'
+  | 'industrial-foundry'
+  | 'stadium-gp'
+  | 'crystal-cavern'
+  | 'medieval-citadel'
+  | 'sunset-boulevard';
+
+export type TrackPropType =
+  | 'desert'
+  | 'pine'
+  | 'harbor'
+  | 'cybercity'
+  | 'sakura'
+  | 'glacier'
+  | 'volcano'
+  | 'tropical'
+  | 'canyon'
+  | 'autumn'
+  | 'synthwave'
+  | 'egypt'
+  | 'jungle'
+  | 'space'
+  | 'snow'
+  | 'industrial'
+  | 'stadium'
+  | 'crystal'
+  | 'castle'
+  | 'sunset';
 
 export type RaceMode = 'solo' | 'split-screen' | 'multiplayer';
 
@@ -46,7 +102,9 @@ export type CarBodyStyle =
   | 'muscle'
   | 'buggy'
   | 'van'
-  | 'hyper';
+  | 'hyper'
+  | 'gt'
+  | 'pickup';
 
 export interface CarSpec {
   id: CarId;
@@ -94,7 +152,7 @@ export interface TrackSpec {
   roadColor: string;
   curbColorA: string;
   curbColorB: string;
-  propType: 'desert' | 'pine' | 'harbor';
+  propType: TrackPropType;
   isNight: boolean;
   waypoints: [number, number, number][];
 }

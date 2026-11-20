@@ -293,7 +293,16 @@ async function startServer() {
   });
 
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({ noServer: true });
+
+  server.on('upgrade', (req, socket, head) => {
+    const pathname = new URL(req.url || '/', 'http://localhost').pathname;
+    if (pathname === '/ws') {
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req);
+      });
+    }
+  });
 
   wss.on('connection', (ws) => {
     const clientId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -505,7 +514,11 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+        ws: { server, path: '/vite-hmr' },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
