@@ -1,0 +1,6 @@
+{
+  "name": "Racing Car 1",
+  "description": "Lightweight 3D blocky multiplayer racing game optimized for low-end 512MB RAM devices with real-time global leaderboards, local host multiplayer, and accessible custom controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
